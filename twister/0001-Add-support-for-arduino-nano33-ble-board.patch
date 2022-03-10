@@ -1,0 +1,202 @@
+From 80e4348683bffd2632d1fe5cd32633aafc78127c Mon Sep 17 00:00:00 2001
+From: Chase Qi <chase.qi@linaro.org>
+Date: Tue, 22 Mar 2022 15:23:30 +0800
+Subject: [PATCH] Add support for arduino nano33 ble board
+
+Signed-off-by: Chase Qi <chase.qi@linaro.org>
+---
+ scripts/pylib/twister/twisterlib.py       | 77 ++++++++++++++---------
+ scripts/schemas/twister/hwmap-schema.yaml |  3 +
+ scripts/twister                           |  7 ++-
+ 3 files changed, 55 insertions(+), 32 deletions(-)
+
+diff --git a/scripts/pylib/twister/twisterlib.py b/scripts/pylib/twister/twisterlib.py
+index 01f473172a..b5e2a90298 100755
+--- a/scripts/pylib/twister/twisterlib.py
++++ b/scripts/pylib/twister/twisterlib.py
+@@ -671,7 +671,8 @@ class DeviceHandler(Handler):
+                 serial_line = ser.readline()
+             except TypeError:
+                 pass
+-            except serial.SerialException:
++            except serial.SerialException as e:
++                logger.error("Serial device read error: %s" % (str(e)))
+                 ser.close()
+                 break
+ 
+@@ -731,6 +732,37 @@ class DeviceHandler(Handler):
+                 proc.communicate()
+                 logger.error("{} timed out".format(script))
+ 
++    def connect_serial(self, hardware, serial_device, serial_pty, ser_pty_process, read_pipe, harness):
++        try:
++            ser = serial.Serial(
++                serial_device,
++                baudrate=hardware.baud,
++                parity=serial.PARITY_NONE,
++                stopbits=serial.STOPBITS_ONE,
++                bytesize=serial.EIGHTBITS,
++                timeout=self.timeout
++            )
++        except serial.SerialException as e:
++            self.set_state("failed", 0)
++            self.instance.reason = "Failed"
++            logger.error("Serial device error: %s" % (str(e)))
++
++            if serial_pty and ser_pty_process:
++                ser_pty_process.terminate()
++                outs, errs = ser_pty_process.communicate()
++                logger.debug("Process {} terminated outs: {} errs {}".format(serial_pty, outs, errs))
++
++            self.make_device_available(serial_device)
++            return
++
++        ser.flush()
++
++        t = threading.Thread(target=self.monitor_serial, daemon=True,
++                             args=(ser, read_pipe, harness))
++        t.start()
++
++        return ser, t
++
+     def handle(self):
+         out_state = "failed"
+         runner = None
+@@ -813,30 +845,6 @@ class DeviceHandler(Handler):
+         if pre_script:
+             self.run_custom_script(pre_script, 30)
+ 
+-        try:
+-            ser = serial.Serial(
+-                serial_device,
+-                baudrate=hardware.baud,
+-                parity=serial.PARITY_NONE,
+-                stopbits=serial.STOPBITS_ONE,
+-                bytesize=serial.EIGHTBITS,
+-                timeout=self.timeout
+-            )
+-        except serial.SerialException as e:
+-            self.set_state("failed", 0)
+-            self.instance.reason = "Failed"
+-            logger.error("Serial device error: %s" % (str(e)))
+-
+-            if serial_pty and ser_pty_process:
+-                ser_pty_process.terminate()
+-                outs, errs = ser_pty_process.communicate()
+-                logger.debug("Process {} terminated outs: {} errs {}".format(serial_pty, outs, errs))
+-
+-            self.make_device_available(serial_device)
+-            return
+-
+-        ser.flush()
+-
+         harness_name = self.instance.testcase.harness.capitalize()
+         harness_import = HarnessImporter(harness_name)
+         harness = harness_import.instance
+@@ -844,9 +852,8 @@ class DeviceHandler(Handler):
+         read_pipe, write_pipe = os.pipe()
+         start_time = time.time()
+ 
+-        t = threading.Thread(target=self.monitor_serial, daemon=True,
+-                             args=(ser, read_pipe, harness))
+-        t.start()
++        if not hardware.connect_after_flash:
++            ser, t = self.connect_serial(hardware, serial_device, serial_pty, ser_pty_process, read_pipe, harness)
+ 
+         d_log = "{}/device.log".format(self.instance.build_dir)
+         logger.debug('Flash command: %s', command)
+@@ -878,6 +885,10 @@ class DeviceHandler(Handler):
+         if post_flash_script:
+             self.run_custom_script(post_flash_script, 30)
+ 
++        if hardware.connect_after_flash:
++            time.sleep(5)
++            ser, t = self.connect_serial(hardware, serial_device, serial_pty, ser_pty_process, read_pipe, harness)
++
+         t.join(self.timeout)
+         if t.is_alive():
+             logger.debug("Timed out while monitoring serial output on {}".format(self.instance.platform.name))
+@@ -4145,6 +4156,7 @@ class DUT(object):
+                  id=None,
+                  serial=None,
+                  serial_baud=None,
++                 connect_after_flash=False,
+                  platform=None,
+                  product=None,
+                  serial_pty=None,
+@@ -4156,6 +4168,7 @@ class DUT(object):
+ 
+         self.serial = serial
+         self.baud = serial_baud or 115200
++        self.connect_after_flash = connect_after_flash
+         self.platform = platform
+         self.serial_pty = serial_pty
+         self._counter = Value("i", 0)
+@@ -4247,8 +4260,8 @@ class HardwareMap:
+         self.detected = []
+         self.duts = []
+ 
+-    def add_device(self, serial, platform, pre_script, is_pty, baud=None):
+-        device = DUT(platform=platform, connected=True, pre_script=pre_script, serial_baud=baud)
++    def add_device(self, serial, platform, pre_script, is_pty, baud=None, connect_after_flash=False):
++        device = DUT(platform=platform, connected=True, pre_script=pre_script, serial_baud=baud, connect_after_flash=connect_after_flash)
+ 
+         if is_pty:
+             device.serial_pty = serial
+@@ -4264,6 +4277,7 @@ class HardwareMap:
+             pre_script = dut.get('pre_script')
+             post_script = dut.get('post_script')
+             post_flash_script = dut.get('post_flash_script')
++            connect_after_flash= dut.get('connect_after_flash')
+             platform  = dut.get('platform')
+             id = dut.get('id')
+             runner = dut.get('runner')
+@@ -4280,7 +4294,8 @@ class HardwareMap:
+                           connected=serial is not None,
+                           pre_script=pre_script,
+                           post_script=post_script,
+-                          post_flash_script=post_flash_script)
++                          post_flash_script=post_flash_script,
++                          connect_after_flash=connect_after_flash)
+             new_dut.fixtures = fixtures
+             new_dut.counter = 0
+             self.duts.append(new_dut)
+diff --git a/scripts/schemas/twister/hwmap-schema.yaml b/scripts/schemas/twister/hwmap-schema.yaml
+index e8f4eed6ee..c33fe3ff3d 100644
+--- a/scripts/schemas/twister/hwmap-schema.yaml
++++ b/scripts/schemas/twister/hwmap-schema.yaml
+@@ -47,3 +47,6 @@ sequence:
+         required: no
+         sequence:
+           - type: str
++      "connect_after_flash":
++        type: bool
++        required: true
+diff --git a/scripts/twister b/scripts/twister
+index 69e7c70551..11e68ad7a3 100755
+--- a/scripts/twister
++++ b/scripts/twister
+@@ -369,6 +369,10 @@ Artificially long but functional example:
+                         for testing on hardware that is listed in the file.
+                         """)
+ 
++    parser.add_argument("--connect-after-flash", action="store_true",
++                        help="""connect to device after running flash command.
++                        """)
++
+     test_or_build.add_argument(
+         "-b", "--build-only", action="store_true",
+         help="Only build the code, do not execute any of it in QEMU")
+@@ -981,7 +985,8 @@ def main():
+                                    options.platform[0],
+                                    options.pre_script,
+                                    False,
+-                                   baud=options.device_serial_baud
++                                   baud=options.device_serial_baud,
++                                   connect_after_flash=options.connect_after_flash
+                                    )
+                 else:
+                     hwm.add_device(options.device_serial_pty,
+-- 
+2.25.1
+

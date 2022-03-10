@@ -1,0 +1,159 @@
+From 264212d25d18a03d99b2991c49957968d7555785 Mon Sep 17 00:00:00 2001
+From: Chase Qi <chase.qi@linaro.org>
+Date: Fri, 20 May 2022 09:26:12 +0800
+Subject: [PATCH] twister: hardcode flash command for 96b_nitrogen
+
+When using west flash to call pyocd, west requres camke cache file which
+is not really needed for twister `--test-only`.
+
+pyocd `--board-id` is deparacated and installing older version pyocd is
+not easy as it depends on older version pyyaml. Switching to older
+version pyyaml will beak other modules.
+
+Increase command timeout for rpi4 worker.
+
+Signed-off-by: Chase Qi <chase.qi@linaro.org>
+---
+ scripts/pylib/twister/twisterlib.py | 104 +++++++++++++++-------------
+ 1 file changed, 56 insertions(+), 48 deletions(-)
+
+diff --git a/scripts/pylib/twister/twisterlib.py b/scripts/pylib/twister/twisterlib.py
+index 7754532411..2c8b18c756 100755
+--- a/scripts/pylib/twister/twisterlib.py
++++ b/scripts/pylib/twister/twisterlib.py
+@@ -759,52 +759,60 @@ class DeviceHandler(Handler):
+ 
+         logger.debug(f"Using serial device {serial_device} @ {hardware.baud} baud")
+ 
+-        if (self.suite.west_flash is not None) or runner:
+-            command = ["west", "flash", "--skip-rebuild", "-d", self.build_dir]
+-            command_extra_args = []
+-
+-            # There are three ways this option is used.
+-            # 1) bare: --west-flash
+-            #    This results in options.west_flash == []
+-            # 2) with a value: --west-flash="--board-id=42"
+-            #    This results in options.west_flash == "--board-id=42"
+-            # 3) Multiple values: --west-flash="--board-id=42,--erase"
+-            #    This results in options.west_flash == "--board-id=42 --erase"
+-            if self.suite.west_flash and self.suite.west_flash != []:
+-                command_extra_args.extend(self.suite.west_flash.split(','))
+-
+-            if runner:
+-                command.append("--runner")
+-                command.append(runner)
+-
+-                board_id = hardware.probe_id or hardware.id
+-                product = hardware.product
+-                if board_id is not None:
+-                    if runner == "pyocd":
+-                        command_extra_args.append("--board-id")
+-                        command_extra_args.append(board_id)
+-                    elif runner == "nrfjprog":
+-                        command_extra_args.append("--dev-id")
+-                        command_extra_args.append(board_id)
+-                    elif runner == "openocd" and product == "STM32 STLink":
+-                        command_extra_args.append("--cmd-pre-init")
+-                        command_extra_args.append("hla_serial %s" % (board_id))
+-                    elif runner == "openocd" and product == "STLINK-V3":
+-                        command_extra_args.append("--cmd-pre-init")
+-                        command_extra_args.append("hla_serial %s" % (board_id))
+-                    elif runner == "openocd" and product == "EDBG CMSIS-DAP":
+-                        command_extra_args.append("--cmd-pre-init")
+-                        command_extra_args.append("cmsis_dap_serial %s" % (board_id))
+-                    elif runner == "jlink":
+-                        command.append("--tool-opt=-SelectEmuBySN  %s" % (board_id))
+-                    elif runner == "stm32cubeprogrammer":
+-                        command.append("--tool-opt=sn=%s" % (board_id))
+-
+-            if command_extra_args != []:
+-                command.append('--')
+-                command.extend(command_extra_args)
++        board_id = hardware.probe_id or hardware.id
++        if hardware.platform == "96b_nitrogen":
++            command = [
++                "pyocd", "flash",
++                "-u", board_id,
++                os.path.join(self.build_dir, "zephyr/zephyr.elf"),
++                "-vvv"
++            ]
+         else:
+-            command = [self.generator_cmd, "-C", self.build_dir, "flash"]
++            if (self.suite.west_flash is not None) or runner:
++                command = ["west", "flash", "--skip-rebuild", "-d", self.build_dir]
++                command_extra_args = []
++
++                # There are three ways this option is used.
++                # 1) bare: --west-flash
++                #    This results in options.west_flash == []
++                # 2) with a value: --west-flash="--board-id=42"
++                #    This results in options.west_flash == "--board-id=42"
++                # 3) Multiple values: --west-flash="--board-id=42,--erase"
++                #    This results in options.west_flash == "--board-id=42 --erase"
++                if self.suite.west_flash and self.suite.west_flash != []:
++                    command_extra_args.extend(self.suite.west_flash.split(','))
++
++                if runner:
++                    command.append("--runner")
++                    command.append(runner)
++
++                    product = hardware.product
++                    if board_id is not None:
++                        if runner == "pyocd":
++                            command_extra_args.append("--board-id")
++                            command_extra_args.append(board_id)
++                        elif runner == "nrfjprog":
++                            command_extra_args.append("--dev-id")
++                            command_extra_args.append(board_id)
++                        elif runner == "openocd" and product == "STM32 STLink":
++                            command_extra_args.append("--cmd-pre-init")
++                            command_extra_args.append("hla_serial %s" % (board_id))
++                        elif runner == "openocd" and product == "STLINK-V3":
++                            command_extra_args.append("--cmd-pre-init")
++                            command_extra_args.append("hla_serial %s" % (board_id))
++                        elif runner == "openocd" and product == "EDBG CMSIS-DAP":
++                            command_extra_args.append("--cmd-pre-init")
++                            command_extra_args.append("cmsis_dap_serial %s" % (board_id))
++                        elif runner == "jlink":
++                            command.append("--tool-opt=-SelectEmuBySN  %s" % (board_id))
++                        elif runner == "stm32cubeprogrammer":
++                            command.append("--tool-opt=sn=%s" % (board_id))
++
++                if command_extra_args != []:
++                    command.append('--')
++                    command.extend(command_extra_args)
++            else:
++                command = [self.generator_cmd, "-C", self.build_dir, "flash"]
+ 
+         pre_script = hardware.pre_script
+         post_flash_script = hardware.post_flash_script
+@@ -854,7 +862,7 @@ class DeviceHandler(Handler):
+             stdout = stderr = None
+             with subprocess.Popen(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
+                 try:
+-                    (stdout, stderr) = proc.communicate(timeout=30)
++                    (stdout, stderr) = proc.communicate(timeout=300)
+                     # ignore unencodable unicode chars
+                     logger.debug(stdout.decode(errors = "ignore"))
+ 
+@@ -876,7 +884,7 @@ class DeviceHandler(Handler):
+             os.write(write_pipe, b'x')  # halt the thread
+ 
+         if post_flash_script:
+-            self.run_custom_script(post_flash_script, 30)
++            self.run_custom_script(post_flash_script, 120)
+ 
+         t.join(self.timeout)
+         if t.is_alive():
+@@ -1691,7 +1699,7 @@ class TestCase(DisablePyTestCollectionMixin):
+         self.toolchain_exclude = None
+         self.toolchain_allow = None
+         self.tc_filter = None
+-        self.timeout = 60
++        self.timeout = 120
+         self.harness = ""
+         self.harness_config = {}
+         self.build_only = True
+-- 
+2.25.1
+
