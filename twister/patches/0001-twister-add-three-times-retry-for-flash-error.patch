@@ -1,0 +1,59 @@
+From b4fe4389d0fe35e9939b1c866699ce114a56d3bf Mon Sep 17 00:00:00 2001
+From: Chase Qi <chase.qi@linaro.org>
+Date: Mon, 11 Jul 2022 11:35:59 +0800
+Subject: [PATCH] twister: add three times retry for flash error
+
+Signed-off-by: Chase Qi <chase.qi@linaro.org>
+---
+ scripts/pylib/twister/twisterlib.py | 35 ++++++++++++++++-------------
+ 1 file changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/scripts/pylib/twister/twisterlib.py b/scripts/pylib/twister/twisterlib.py
+index 2c8b18c756..720f58448e 100755
+--- a/scripts/pylib/twister/twisterlib.py
++++ b/scripts/pylib/twister/twisterlib.py
+@@ -861,21 +861,26 @@ class DeviceHandler(Handler):
+         try:
+             stdout = stderr = None
+             with subprocess.Popen(command, stderr=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
+-                try:
+-                    (stdout, stderr) = proc.communicate(timeout=300)
+-                    # ignore unencodable unicode chars
+-                    logger.debug(stdout.decode(errors = "ignore"))
+-
+-                    if proc.returncode != 0:
+-                        self.instance.reason = "Device issue (Flash?)"
+-                        with open(d_log, "w") as dlog_fp:
+-                            dlog_fp.write(stderr.decode())
+-                        os.write(write_pipe, b'x')  # halt the thread
+-                        out_state = "flash_error"
+-                except subprocess.TimeoutExpired:
+-                    proc.kill()
+-                    (stdout, stderr) = proc.communicate()
+-                    self.instance.reason = "Device issue (Timeout)"
++                for i in range(3):
++                    try:
++                        (stdout, stderr) = proc.communicate(timeout=300)
++                        # ignore unencodable unicode chars
++                        logger.debug(stdout.decode(errors = "ignore"))
++
++                        returncode = proc.returncode
++                        if returncode == 0:
++                            break
++                    except subprocess.TimeoutExpired:
++                        proc.kill()
++                        (stdout, stderr) = proc.communicate()
++                        self.instance.reason = "Device issue (Timeout)"
++
++                if returncode != 0:
++                    self.instance.reason = "Device issue (Flash?)"
++                    with open(d_log, "w") as dlog_fp:
++                        dlog_fp.write(stderr.decode())
++                    os.write(write_pipe, b'x')  # halt the thread
++                    out_state = "flash_error"
+ 
+             with open(d_log, "w") as dlog_fp:
+                 dlog_fp.write(stderr.decode())
+-- 
+2.25.1
+

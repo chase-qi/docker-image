@@ -48,10 +48,11 @@ RUN cd /root/zephyrproject/zephyr && \
     git checkout v3.0-branch && \
     pip3 install -r scripts/requirements.txt
 
-COPY 0001-twister-hardcode-flash-command-for-96b_nitrogen.patch /root/
+COPY ./patches/ /root/
 RUN cd /root/zephyrproject/zephyr && \
     git config --global user.email "chase.qi@linaro.org" && \
     git config --global user.name "Chase Qi" && \
-    git am /root/0001-twister-hardcode-flash-command-for-96b_nitrogen.patch
+    git am /root/0001-twister-hardcode-flash-command-for-96b_nitrogen.patch && \
+    git am /root/0001-twister-add-three-times-retry-for-flash-error.patch
 
 WORKDIR /root/zephyrproject/zephyr/
